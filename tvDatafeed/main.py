@@ -4,6 +4,7 @@ import json
 import logging
 import random
 import re
+import regex
 import string
 import pandas as pd
 from websocket import create_connection
@@ -37,9 +38,9 @@ class TvDatafeed:
     __ws_timeout = 5
 
     def __init__(
-        self,
-        username: str = None,
-        password: str = None,
+            self,
+            username: str = None,
+            password: str = None,
     ) -> None:
         """Create TvDatafeed object
 
@@ -85,6 +86,12 @@ class TvDatafeed:
         logging.debug("creating websocket connection")
         self.ws = create_connection(
             "wss://data.tradingview.com/socket.io/websocket", headers=self.__ws_headers, timeout=self.__ws_timeout
+        )
+
+    def __create_custom_connection(self, url):
+        logging.debug("creating websocket connection")
+        self.ws = create_connection(
+            url, headers=self.__ws_headers, timeout=self.__ws_timeout
         )
 
     @staticmethod
@@ -133,6 +140,7 @@ class TvDatafeed:
     @staticmethod
     def __create_df(raw_data, symbol):
         try:
+            print(raw_data)
             out = re.search('"s":\[(.+?)\}\]', raw_data).group(1)
             x = out.split(',{"')
             data = list()
@@ -169,6 +177,27 @@ class TvDatafeed:
         except AttributeError:
             logger.error("no data, please check the exchange and symbol")
 
+    def __create_overview_result(self, raw_data, symbol):
+        try:
+            raw_data = re.sub(r"~m~\d+~m~", ",", raw_data)
+            raw_data = f"[{raw_data[1:]}]"
+            matches = json.loads(raw_data)
+            out = {}
+            for group in matches:
+                p = group.get("p", [])
+
+                if not p:
+                    continue
+
+                if isinstance(p[-1], dict):
+                    out.update(p[-1]["v"])
+
+            print(f"out: {out}")
+            return out
+        except AttributeError as e:
+            print(e)
+            logger.error("no data, please check the exchange and symbol")
+
     @staticmethod
     def __format_symbol(symbol, exchange, contract: int = None):
 
@@ -186,13 +215,13 @@ class TvDatafeed:
         return symbol
 
     def get_hist(
-        self,
-        symbol: str,
-        exchange: str = "NSE",
-        interval: Interval = Interval.in_daily,
-        n_bars: int = 10,
-        fut_contract: int = None,
-        extended_session: bool = False,
+            self,
+            symbol: str,
+            exchange: str = "NSE",
+            interval: Interval = Interval.in_daily,
+            n_bars: int = 10,
+            fut_contract: int = None,
+            extended_session: bool = False,
     ) -> pd.DataFrame:
         """get historical data
 
@@ -271,7 +300,7 @@ class TvDatafeed:
             [self.chart_session, "s1", "s1", "symbol_1", interval, n_bars],
         )
         self.__send_message("switch_timezone", [
-                            self.chart_session, "exchange"])
+            self.chart_session, "exchange"])
 
         raw_data = ""
 
@@ -288,6 +317,55 @@ class TvDatafeed:
                 break
 
         return self.__create_df(raw_data, symbol)
+
+    def get_overview(
+            self,
+            symbol: str,
+            exchange: str = "NSE",
+            fut_contract: int = None,
+    ) -> dict[str, object]:
+        """get historical data
+
+        Args:
+            symbol (str): symbol name
+            exchange (str, optional): exchange, not required if symbol is in format EXCHANGE:SYMBOL. Defaults to None.
+            fut_contract (int, optional): None for cash, 1 for continuous current contract in front, 2 for continuous next contract in front . Defaults to None.
+
+        Returns:
+            pd.Dataframe: dataframe with sohlcv as columns
+        """
+        symbol = self.__format_symbol(
+            symbol=symbol, exchange=exchange, contract=fut_contract
+        )
+
+        date_str = datetime.datetime.now().strftime("%Y_%m_%d-%H_%M")
+        url = f"wss://data.tradingview.com/socket.io/websocket?from=symbols%2F{symbol.replace(':', '-')}%2Ffinancials-revenue%2F&date={date_str}"
+        self.__create_custom_connection(url)
+
+        self.__send_message("set_auth_token", [self.token])
+        self.__send_message("quote_create_session", [self.session])
+
+        self.__send_message(
+            "quote_add_symbols", [self.session, symbol]
+        )
+        self.__send_message("quote_fast_symbols", [self.session, symbol])
+
+        raw_data = ""
+
+        logger.debug(f"getting data for {symbol}...")
+        while True:
+            try:
+                result = self.ws.recv()
+                raw_data = raw_data + result + "\n"
+            except Exception as e:
+                logger.error(e)
+                break
+
+            if "series_completed" in result:
+                break
+
+        # print(f"Raw: {raw_data}")
+        return self.__create_overview_result(raw_data, symbol)
 
     def search_symbol(self, text: str, exchange: str = ''):
         url = self.__search_url.format(text, exchange)
@@ -307,14 +385,18 @@ class TvDatafeed:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG)
     tv = TvDatafeed()
-    print(tv.get_hist("CRUDEOIL", "MCX", fut_contract=1))
-    print(tv.get_hist("NIFTY", "NSE", fut_contract=1))
-    print(
-        tv.get_hist(
-            "EICHERMOT",
-            "NSE",
-            interval=Interval.in_1_hour,
-            n_bars=500,
-            extended_session=False,
-        )
-    )
+    print(tv.get_hist("KCB", "NSEKE"))
+    print(tv.get_overview(
+        "KCB",
+        "NSEKE",
+    ))
+    # print(tv.get_hist("NIFTY", "NSE", fut_contract=1))
+    # print(
+    #     tv.get_hist(
+    #         "EICHERMOT",
+    #         "NSE",
+    #         interval=Interval.in_1_hour,
+    #         n_bars=500,
+    #         extended_session=False,
+    #     )
+    # )
