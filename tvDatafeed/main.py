@@ -364,7 +364,8 @@ class TvDatafeed:
             n_bars: int = 10,
             fut_contract: int = None,
             extended_session: bool = False,
-            session=None
+            on_message: Any = None,
+            params: Dict[str, Any] = None
     ) -> Union[pd.DataFrame, Dict[str, pd.DataFrame]]:
         """get historical data
 
@@ -388,14 +389,10 @@ class TvDatafeed:
                 symbol=symbol, exchange=exchange, contract=fut_contract
             ) for symbol, exchange in zip(symbols, exchanges)
         ]
-        symbols_string = ",".join(symbols)
 
         interval = interval.value
 
-        if not session:
-            self.__create_connection()
-        else:
-            self.ws = session
+        self.__create_connection()
 
         self.__send_message("set_auth_token", [self.token])
         self.__send_message("chart_create_session", [self.chart_session, ""])
@@ -432,6 +429,7 @@ class TvDatafeed:
 
         symbol_dfs = {}
         for i, symbol in enumerate(symbols):
+            await asyncio.sleep(2)
             self.__send_message(
                 "resolve_symbol",
                 [
@@ -449,12 +447,30 @@ class TvDatafeed:
                 [self.chart_session, f"s{i + 1}", f"s{i + 1}", f"symbol_{i + 1}", interval, n_bars],
             )
 
-            symbol_dfs[symbol] = await self.receive_create_df(symbol)
+            raw_data = ""
+            logger.debug(f"getting data for {symbol}...")
+            while True:
+                try:
+                    result = self.ws.recv()
+                    raw_data = raw_data + result + "\n"
+                except Exception as e:
+                    logger.error(e)
+                    break
 
-            self.__send_message(
-                "remove_series",
-                [self.chart_session, f"s{i + 1}"],
-            )
+                if "series_completed" in result:
+                    symbol_df = await self.__create_df(raw_data, symbol, add_s_field=True)
+                    symbol_df.reset_index(inplace=True)
+                    symbol_dfs[symbol] = symbol_df
+
+                    if on_message:
+                        on_message.delay(symbol_df.to_dict('records'), **params)
+
+                    self.__send_message(
+                        "remove_series",
+                        [self.chart_session, f"s{i + 1}"],
+                    )
+
+                    break
 
         self.__send_message("switch_timezone", [
             self.chart_session, "exchange"])
@@ -664,11 +680,13 @@ class TvDatafeed:
         # print(f"Raw: {raw_data}")
         return self.__create_overview_result(raw_data, symbol)
 
-    def get_overview_batch(
+    async def get_overview_batch(
             self,
             symbols: List[str],
             exchanges: List[str],
             fut_contract: int = None,
+            on_message: Any = None,
+            params: Dict[str, Any] = None
     ) -> Dict[str, object]:
         """get historical data
 
@@ -697,6 +715,7 @@ class TvDatafeed:
 
         symbol_dict = {}
         for i, symbol in enumerate(symbols):
+            await asyncio.sleep(2)
             self.__send_message(
                 "quote_add_symbols", [self.session, symbol]
             )
@@ -713,8 +732,11 @@ class TvDatafeed:
                     logger.error(e)
                     break
 
-                if "series_completed" in result:
-                    break
+                if "quote_completed" in result:
+                    sym_list = self.__create_overview_result_update(raw_data, single_output=False)
+
+                    if on_message:
+                        on_message.delay(sym_list, **params)
 
             # print(f"Raw-{symbol}: {raw_data}")
 
