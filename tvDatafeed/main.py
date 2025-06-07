@@ -469,7 +469,7 @@ class TvDatafeed:
             fut_contract: int = None,
             extended_session: bool = False,
             on_message: Any = None,
-            params: dict = None
+            params: Dict[str, Any] = None
     ):
         """get historical data
 
@@ -604,7 +604,7 @@ class TvDatafeed:
             symbol: str,
             exchange: str = "NSE",
             fut_contract: int = None,
-    ) -> dict[str, object]:
+    ) -> Dict[str, object]:
         """get historical data
 
         Args:
@@ -653,7 +653,7 @@ class TvDatafeed:
             symbols: List[str],
             exchanges: List[str],
             fut_contract: int = None,
-    ) -> dict[str, object]:
+    ) -> Dict[str, object]:
         """get historical data
 
         Args:
@@ -712,7 +712,7 @@ class TvDatafeed:
             exchanges: List[str],
             fut_contract: int = None,
             on_message: Any = None,
-            params: dict = None
+            params: Dict[str, Any] = None
     ):
         """get historical data
 
