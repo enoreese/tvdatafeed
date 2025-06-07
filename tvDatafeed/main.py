@@ -8,6 +8,7 @@ import regex
 import string
 import pandas as pd
 from websocket import create_connection
+from typing import Union, List, Dict
 import requests
 import json
 
@@ -138,10 +139,9 @@ class TvDatafeed:
         self.ws.send(m)
 
     @staticmethod
-    def __create_df(raw_data, symbol):
+    async def __create_df(raw_data, symbol):
         try:
-            print(raw_data)
-            out = re.search('"s":\[(.+?)\}\]', raw_data).group(1)
+            out = re.search('"s":\[\{(.+?)\}\]', raw_data).group(1)
             x = out.split(',{"')
             data = list()
             volume_data = True
@@ -192,7 +192,20 @@ class TvDatafeed:
                 if isinstance(p[-1], dict):
                     out.update(p[-1]["v"])
 
-            print(f"out: {out}")
+            return out
+        except AttributeError as e:
+            print(e)
+            logger.error("no data, please check the exchange and symbol")
+
+    def __create_overview_result_update(self, raw_data, symbol):
+        try:
+            raw_data = re.findall('"v":\{(.+?)\}~m', raw_data)
+            matches = [json.loads("{" + out[:-3] + "}") for out in raw_data]
+            out = [match for match in matches if "business_description" in match][0]
+            if not out:
+                logger.error("no data, please check the exchange and symbol")
+                return None
+
             return out
         except AttributeError as e:
             print(e)
@@ -318,6 +331,123 @@ class TvDatafeed:
 
         return self.__create_df(raw_data, symbol)
 
+    async def get_hist_batch(
+            self,
+            symbols: List[str],
+            exchanges: List[str],
+            interval: Interval = Interval.in_daily,
+            n_bars: int = 10,
+            fut_contract: int = None,
+            extended_session: bool = False,
+    ) -> Union[pd.DataFrame, Dict[str, pd.DataFrame]]:
+        """get historical data
+
+        Args:
+            symbols (str or list): symbol name or list of symbol names
+            exchanges (str or list, optional): exchange or list of exchanges. Defaults to "NSE".
+            interval (str, optional): chart interval. Defaults to 'D'.
+            n_bars (int, optional): no of bars to download, max 5000. Defaults to 10.
+            fut_contract (int, optional): None for cash, 1 for continuous current contract in front,
+                                        2 for continuous next contract in front. Defaults to None.
+            extended_session (bool, optional): regular session if False, extended session if True.
+                                            Defaults to False.
+
+        Returns:
+            Union[pd.DataFrame, Dict[str, pd.DataFrame]]:
+                - Single DataFrame if single symbol is provided
+                - Dictionary of {symbol: DataFrame} if multiple symbols are provided
+        """
+        symbols = [
+            self.__format_symbol(
+                symbol=symbol, exchange=exchange, contract=fut_contract
+            ) for symbol, exchange in zip(symbols, exchanges)
+        ]
+        symbols_string = ",".join(symbols)
+
+        interval = interval.value
+
+        self.__create_connection()
+
+        self.__send_message("set_auth_token", [self.token])
+        self.__send_message("chart_create_session", [self.chart_session, ""])
+        self.__send_message("quote_create_session", [self.session])
+        self.__send_message(
+            "quote_set_fields",
+            [
+                self.session,
+                "ch",
+                "chp",
+                "current_session",
+                "description",
+                "local_description",
+                "language",
+                "exchange",
+                "fractional",
+                "is_tradable",
+                "lp",
+                "lp_time",
+                "minmov",
+                "minmove2",
+                "original_name",
+                "pricescale",
+                "pro_name",
+                "short_name",
+                "type",
+                "update_mode",
+                "volume",
+                "currency_code",
+                "rchp",
+                "rtc",
+            ],
+        )
+
+        symbol_dfs = {}
+        for i, symbol in enumerate(symbols):
+            self.__send_message(
+                "resolve_symbol",
+                [
+                    self.chart_session,
+                    f"symbol_{i + 1}",
+                    '={"symbol":"'
+                    + symbol
+                    + '","adjustment":"splits","session":'
+                    + ('"regular"' if not extended_session else '"extended"')
+                    + "}",
+                ],
+            )
+            self.__send_message(
+                "create_series",
+                [self.chart_session, f"s{i + 1}", f"s{i + 1}", f"symbol_{i + 1}", interval, n_bars],
+            )
+
+            symbol_dfs[symbol] = await self.receive_create_df(symbol)
+
+            self.__send_message(
+                "remove_series",
+                [self.chart_session, f"s{i + 1}"],
+            )
+
+        self.__send_message("switch_timezone", [
+            self.chart_session, "exchange"])
+
+        return symbol_dfs
+
+    async def receive_create_df(self, symbol):
+        raw_data = ""
+        logger.debug(f"getting data for {symbol}...")
+        while True:
+            try:
+                result = self.ws.recv()
+                raw_data = raw_data + result + "\n"
+            except Exception as e:
+                logger.error(e)
+                break
+
+            if "series_completed" in result:
+                break
+        print(raw_data)
+        return await self.__create_df(raw_data, symbol)
+
     def get_overview(
             self,
             symbol: str,
@@ -367,6 +497,65 @@ class TvDatafeed:
         # print(f"Raw: {raw_data}")
         return self.__create_overview_result(raw_data, symbol)
 
+    def get_overview_batch(
+            self,
+            symbols: List[str],
+            exchanges: List[str],
+            fut_contract: int = None,
+    ) -> dict[str, object]:
+        """get historical data
+
+        Args:
+            symbols (str): symbol name
+            exchanges (str, optional): exchange, not required if symbol is in format EXCHANGE:SYMBOL. Defaults to None.
+            fut_contract (int, optional): None for cash, 1 for continuous current contract in front, 2 for continuous next contract in front . Defaults to None.
+
+        Returns:
+            pd.Dataframe: dataframe with sohlcv as columns
+        """
+        symbols = [
+            self.__format_symbol(
+                symbol=symbol, exchange=exchange, contract=fut_contract
+            ) for symbol, exchange in zip(symbols, exchanges)
+        ]
+        symbols_string = ",".join(symbols)
+        symbols_string_encoded = "%2F".join(symbols)
+
+        date_str = datetime.datetime.now().strftime("%Y_%m_%d-%H_%M")
+        url = f"wss://data.tradingview.com/socket.io/websocket?from=symbols%2F{symbols_string_encoded.replace(':', '-')}%2Ffinancials-revenue%2F&date={date_str}"
+        print(url)
+        self.__create_custom_connection(url)
+
+        self.__send_message("set_auth_token", [self.token])
+        self.__send_message("quote_create_session", [self.session])
+
+        symbol_dict = {}
+        for i, symbol in enumerate(symbols):
+            self.__send_message(
+                "quote_add_symbols", [self.session, symbol]
+            )
+            self.__send_message("quote_fast_symbols", [self.session, symbol])
+
+            raw_data = ""
+
+            logger.debug(f"getting data for {symbol}...")
+            while True:
+                try:
+                    result = self.ws.recv()
+                    raw_data = raw_data + result + "\n"
+                except Exception as e:
+                    logger.error(e)
+                    break
+
+                if "series_completed" in result:
+                    break
+
+            # print(f"Raw-{symbol}: {raw_data}")
+
+            symbol_dict[symbols[i]] = self.__create_overview_result_update(raw_data, symbol)
+
+        return symbol_dict
+
     def search_symbol(self, text: str, exchange: str = ''):
         url = self.__search_url.format(text, exchange)
 
@@ -383,12 +572,22 @@ class TvDatafeed:
 
 
 if __name__ == "__main__":
+    import asyncio
+
     logging.basicConfig(level=logging.DEBUG)
     tv = TvDatafeed()
-    print(tv.get_hist("KCB", "NSEKE"))
-    print(tv.get_overview(
-        "KCB",
-        "NSEKE",
+    # print(tv.get_hist("KCB", "NSEKE"))
+    # print(tv.get_overview(
+    #     "KCB",
+    #     "NSEKE",
+    # ))
+    # print(asyncio.run(tv.get_hist_batch(
+    #     symbols=["MTNN", "GTCO"],
+    #     exchanges=["NSENG", "NSENG"]
+    # )))
+    print(tv.get_overview_batch(
+        symbols=["MTNN", "GTCO"],
+        exchanges=["NSENG", "NSENG"]
     ))
     # print(tv.get_hist("NIFTY", "NSE", fut_contract=1))
     # print(
