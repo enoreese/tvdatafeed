@@ -140,10 +140,18 @@ class TvDatafeed:
         return self.__prepend_header(self.__construct_message(func, paramList))
 
     def __send_message(self, func, args):
-        m = self.__create_message(func, args)
-        if self.ws_debug:
-            print(m)
-        self.ws.send(m)
+        try:
+            m = self.__create_message(func, args)
+            if self.ws_debug:
+                print(m)
+            self.ws.send(m)
+        except WebSocketConnectionClosedException as e:
+            logger.error(e)
+            self.__create_connection()
+            m = self.__create_message(func, args)
+            if self.ws_debug:
+                print(m)
+            self.ws.send(m)
 
     @staticmethod
     async def __create_df(raw_data, symbol, add_s_field=False):
