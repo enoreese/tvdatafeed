@@ -513,11 +513,9 @@ class TvDatafeed:
 
         logger.debug(f"getting data for {len(symbols)} symbols...")
         while True:
-            # try and check if self.ws is not none and is still open
-            if not self.is_ws_connected():
-                self.__create_connection()
-
             for i, symbol in tqdm(enumerate(symbols)):
+                await asyncio.sleep(3)
+
                 chart_session = self.__generate_chart_session()
                 session = self.__generate_session()
 
@@ -575,9 +573,17 @@ class TvDatafeed:
                     raw_data = raw_data + result + "\n"
                 except Exception as e:
                     logger.error(e)
+                    self.__create_connection()
+                    self.__send_message("set_auth_token", [self.token])
+                    result = self.ws.recv()
+                    await asyncio.sleep(1.5)
+                    raw_data = raw_data + result + "\n"
+
+                except Exception as e:
+                    logger.error(e)
                     break
 
-                if "series_completed" in result:
+            if "series_completed" in result:
                     symbol_df = await self.__create_df(raw_data, symbol, add_s_field=True)
                     symbol_df.reset_index(inplace=True)
                     symbol_dfs[symbol] = symbol_df
@@ -590,6 +596,8 @@ class TvDatafeed:
                         [chart_session, f"s{i + 1}"],
                     )
                     raw_data = ""
+
+            await asyncio.sleep(1.5)
 
     async def receive_create_df(self, symbol):
         raw_data = ""
@@ -756,13 +764,15 @@ class TvDatafeed:
             for i, symbol in enumerate(list(quoted_tickers)):
                 if quoted:
                     continue
+
+                await asyncio.sleep(3)
                 self.__send_message(
                     "quote_add_symbols", [self.session, symbol]
                 )
                 self.__send_message("quote_fast_symbols", [self.session, symbol])
 
                 logger.debug(f"getting data for {symbol}...")
-                await asyncio.sleep(1.5)
+                await asyncio.sleep(3)
             else:
                 quoted = True
                 try:
@@ -792,6 +802,8 @@ class TvDatafeed:
                         on_message.delay(sym_list, **params)
 
                     raw_data = ""
+
+                await asyncio.sleep(1.5)
 
     def search_symbol(self, text: str, exchange: str = ''):
         url = self.__search_url.format(text, exchange)
