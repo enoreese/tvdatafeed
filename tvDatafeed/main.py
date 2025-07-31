@@ -221,7 +221,7 @@ class TvDatafeed:
     def __create_overview_result_update(self, raw_data, single_output=True):
         try:
             raw_data = re.findall('"v":\{(.+?)\}~m', raw_data)
-            matches = [json.loads("{" + out[:-3] + "}") for out in raw_data]
+            matches = [json.loads("{" + out[:-3] + "}") for out in raw_data if len(out) > 0]
             if single_output:
                 out = [match for match in matches if "business_description" in match][0]
             else:
@@ -734,13 +734,11 @@ class TvDatafeed:
 
                 if "quote_completed" in result:
                     sym_list = self.__create_overview_result_update(raw_data, single_output=False)
+                    for sym in sym_list:
+                        symbol_dict[sym['short_name']] = sym
 
                     if on_message:
                         on_message.delay(sym_list, **params)
-
-            # print(f"Raw-{symbol}: {raw_data}")
-
-            symbol_dict[symbols[i]] = self.__create_overview_result_update(raw_data, symbol)
 
         return symbol_dict
 
