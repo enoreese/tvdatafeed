@@ -734,6 +734,8 @@ class TvDatafeed:
 
                 if "quote_completed" in result:
                     sym_list = self.__create_overview_result_update(raw_data, single_output=False)
+                    if not sym_list:
+                        continue
                     for sym in sym_list:
                         symbol_dict[sym['short_name']] = sym
 
